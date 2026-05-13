@@ -16,8 +16,9 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("設定")
-        self.geometry("520x400")
-        self.resizable(False, False)
+        self.geometry("520x480")
+        self.resizable(False, True)
+        self.minsize(520, 420)
         self.configure(bg=BG)
         self.grab_set()
         self.transient(parent)
@@ -48,10 +49,6 @@ class SettingsDialog(tk.Toplevel):
 
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=24, pady=12)
 
-        # ── Dynamic settings area ──
-        self._settings_frame = tk.Frame(self, bg=BG)
-        self._settings_frame.pack(fill="x", padx=24)
-
         # Store all entry vars
         self.gemini_key_var  = tk.StringVar(value=cfg.get("gemini_api_key", ""))
         self.ollama_url_var  = tk.StringVar(value=cfg.get("ollama_url", "http://127.0.0.1:11434"))
@@ -60,9 +57,7 @@ class SettingsDialog(tk.Toplevel):
         self.custom_model_var= tk.StringVar(value=cfg.get("custom_model", ""))
         self.custom_key_var  = tk.StringVar(value=cfg.get("custom_api_key", ""))
 
-        self._render_provider_settings()
-
-        # Buttons
+        # Buttons — packed first so they're always anchored to the bottom
         btn_frame = tk.Frame(self, bg=BG)
         btn_frame.pack(side="bottom", pady=16)
         tk.Button(btn_frame, text="儲存", command=self._save,
@@ -73,6 +68,14 @@ class SettingsDialog(tk.Toplevel):
                   bg=SURFACE, fg=TEXT, relief="flat",
                   font=("SF Pro Display", 12), padx=24, pady=7,
                   cursor="hand2").pack(side="left", padx=6)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=24, side="bottom")
+
+        # ── Dynamic settings area ──
+        self._settings_frame = tk.Frame(self, bg=BG)
+        self._settings_frame.pack(fill="x", padx=24)
+
+        self._render_provider_settings()
 
     def _on_provider_change(self):
         for w in self._settings_frame.winfo_children():
