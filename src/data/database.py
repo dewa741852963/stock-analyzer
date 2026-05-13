@@ -152,11 +152,12 @@ def row_counts(symbol: str) -> dict:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _f(v) -> float:
+def _f(v):
     try:
-        return float(v) if v is not None else 0.0
+        f = float(v)
+        return None if (f != f) else f   # NaN → None (stored as SQL NULL)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _now() -> str:

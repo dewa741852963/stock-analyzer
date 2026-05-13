@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import mplfinance as mpf
 import pandas as pd
 
@@ -521,9 +521,7 @@ class StockAnalyzerApp(tk.Tk):
         fig.tight_layout(pad=0.8)
         fig.patch.set_facecolor(PANEL)
 
-        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._embed_chart(fig, self.chart_frame)
 
     # ── K-line chart ──────────────────────────────────────────────────────────
 
@@ -557,12 +555,9 @@ class StockAnalyzerApp(tk.Tk):
         if add:
             kwargs["addplot"] = add
 
-        fig, _ = mpf.plot(df, **kwargs)
+        fig, axes = mpf.plot(df, **kwargs)
         fig.patch.set_facecolor(PANEL)
-
-        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._embed_chart(fig, self.chart_frame, axes=axes)
 
     # ── Indicator chart ───────────────────────────────────────────────────────
 
@@ -617,9 +612,7 @@ class StockAnalyzerApp(tk.Tk):
                 spine.set_color(BORDER)
 
         fig.tight_layout(pad=0.4)
-        canvas = FigureCanvasTkAgg(fig, master=self.ind_chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._embed_chart(fig, self.ind_chart_frame, axes=[ax1, ax2])
 
     # ── Fundamentals (2-column grid) ─────────────────────────────────────────
 
@@ -672,9 +665,15 @@ class StockAnalyzerApp(tk.Tk):
             return
         provider = cfg_get("ai_provider")
         if provider == "gemini" and not get_api_key():
+            self._show_ai("尚未設定 Gemini API Key。\n\n請點右上角 ⚙ → 選擇 AI 模型 → 填入 API Key 後儲存。")
+            self._open_settings()
+            return
+        if provider == "ollama" and not cfg_get("ollama_url"):
+            self._show_ai("尚未設定 Ollama URL。\n\n請點右上角 ⚙ → 填入 Ollama URL。")
             self._open_settings()
             return
         if provider == "custom" and not cfg_get("custom_url"):
+            self._show_ai("尚未設定自訂 API URL。\n\n請點右上角 ⚙ → 填入 API Base URL。")
             self._open_settings()
             return
         self._ai_btn.configure(state="disabled", text="分析中…")
@@ -692,12 +691,55 @@ class StockAnalyzerApp(tk.Tk):
             result = f"分析失敗：{e}"
         self.after(0, lambda: self._show_ai(result))
 
-    def _show_ai(self, text):
+    def _show_ai(self, text: str):
         self.ai_text.configure(state="normal")
         self.ai_text.delete("1.0", "end")
-        self.ai_text.insert("end", text)
+        self.ai_text.insert("end", text or "（AI 未回傳任何內容）")
         self.ai_text.configure(state="disabled")
         self._ai_btn.configure(state="normal", text="🤖  執行 AI 分析")
+
+    # ── Chart embedding helper ────────────────────────────────────────────────
+
+    def _embed_chart(self, fig, parent, axes=None):
+        """Embed a matplotlib Figure into a tkinter parent with zoom toolbar."""
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # Toolbar
+        tb_frame = tk.Frame(parent, bg=PANEL)
+        tb_frame.pack(fill="x", side="bottom")
+        toolbar = NavigationToolbar2Tk(canvas, tb_frame)
+        toolbar.config(background=PANEL)
+        for child in toolbar.winfo_children():
+            try:
+                child.config(background=PANEL, foreground=DIM,
+                             activebackground=SURFACE, activeforeground=TEXT,
+                             highlightbackground=PANEL)
+            except tk.TclError:
+                pass
+        toolbar.update()
+
+        # Scroll-wheel zoom on all axes
+        target_axes = axes if axes else (fig.get_axes() or [])
+        if not isinstance(target_axes, (list, tuple)):
+            target_axes = [target_axes]
+
+        def _on_scroll(event):
+            if event.inaxes is None:
+                return
+            ax = event.inaxes
+            factor = 0.85 if event.button == "up" else 1.18
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            cx = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) / 2
+            cy = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) / 2
+            ax.set_xlim([cx - (cx - xlim[0]) * factor, cx + (xlim[1] - cx) * factor])
+            ax.set_ylim([cy - (cy - ylim[0]) * factor, cy + (ylim[1] - cy) * factor])
+            canvas.draw_idle()
+
+        canvas.mpl_connect("scroll_event", _on_scroll)
+        return canvas
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

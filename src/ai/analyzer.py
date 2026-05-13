@@ -67,9 +67,12 @@ def _analyze_gemini(data: dict) -> str:
         return "請在設定中填入 Gemini API Key。"
     import google.generativeai as genai
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash-latest")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     response = model.generate_content(_build_prompt(data))
-    return response.text
+    text = response.text or ""
+    if not text.strip():
+        return "Gemini 未回傳內容，請稍後再試。"
+    return text
 
 
 def _analyze_ollama(data: dict) -> str:
