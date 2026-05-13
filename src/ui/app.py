@@ -1,156 +1,303 @@
 import threading
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import ttk, scrolledtext
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import mplfinance as mpf
 import pandas as pd
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import customtkinter as ctk
 
 from src.data.fetcher import fetch_stock_data, find_col
 from src.config import get_api_key
 from src.ui.settings_dialog import SettingsDialog
 
-DARK_BG = "#0f0f1a"
-PANEL_BG = "#1a1a2e"
-CARD_BG = "#111827"
-BORDER = "#374151"
-TEXT_DIM = "#9ca3af"
+# ── Catppuccin Mocha palette ─────────────────────────────────────────────────
+BG      = "#1e1e2e"
+PANEL   = "#2a2a3e"
+CARD    = "#181825"
+SURFACE = "#313244"
+ACCENT  = "#89b4fa"
+GREEN   = "#a6e3a1"
+RED     = "#f38ba8"
+YELLOW  = "#f9e2af"
+PURPLE  = "#cba6f7"
+TEXT    = "#cdd6f4"
+DIM     = "#6c7086"
+BORDER  = "#45475a"
+MONO    = "SF Mono"   # monospace font for numbers
 
 
-class StockAnalyzerApp(ctk.CTk):
+def _apply_styles():
+    s = ttk.Style()
+    s.theme_use("clam")
+    s.configure(".", background=BG, foreground=TEXT, font=("SF Pro Display", 12))
+    s.configure("TFrame", background=BG)
+    s.configure("TLabel", background=BG, foreground=TEXT)
+    s.configure("TEntry", fieldbackground=CARD, foreground=TEXT,
+                bordercolor=BORDER, insertcolor=TEXT, padding=4)
+    s.configure("TCombobox", fieldbackground=CARD, foreground=TEXT,
+                background=SURFACE, arrowcolor=TEXT, padding=4)
+    s.map("TCombobox", fieldbackground=[("readonly", CARD)], foreground=[("readonly", TEXT)])
+    s.configure("Accent.TButton", background=ACCENT, foreground=BG,
+                borderwidth=0, focusthickness=0, padding=(14, 6), font=("SF Pro Display", 12, "bold"))
+    s.map("Accent.TButton", background=[("active", "#74c7ec"), ("disabled", SURFACE)])
+    s.configure("Ghost.TButton", background=SURFACE, foreground=TEXT,
+                borderwidth=0, focusthickness=0, padding=(10, 6))
+    s.map("Ghost.TButton", background=[("active", BORDER)])
+    s.configure("AI.TButton", background=PURPLE, foreground=BG,
+                borderwidth=0, focusthickness=0, padding=(14, 6), font=("SF Pro Display", 12, "bold"))
+    s.map("AI.TButton", background=[("active", "#b4befe"), ("disabled", SURFACE)])
+    s.configure("TNotebook", background=PANEL, borderwidth=0, tabmargins=0)
+    s.configure("TNotebook.Tab", background=PANEL, foreground=DIM,
+                padding=(16, 6), borderwidth=0, font=("SF Pro Display", 11))
+    s.map("TNotebook.Tab", background=[("selected", CARD)], foreground=[("selected", TEXT)])
+    s.configure("TScrollbar", background=SURFACE, troughcolor=CARD,
+                borderwidth=0, arrowsize=12)
+
+
+class StockAnalyzerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Stock Analyzer")
         self.geometry("1440x900")
         self.minsize(1100, 700)
-        self.configure(fg_color=DARK_BG)
+        self.configure(bg=BG)
+        _apply_styles()
 
         self.stock_data = None
+        self._loading = False
         self._build_toolbar()
         self._build_body()
+        self.update_idletasks()
 
-    # ── Toolbar ──────────────────────────────────────────────────────────────
+    # ── Toolbar ───────────────────────────────────────────────────────────────
 
     def _build_toolbar(self):
-        bar = ctk.CTkFrame(self, fg_color=PANEL_BG, height=58, corner_radius=0)
+        bar = tk.Frame(self, bg=PANEL, height=58)
         bar.pack(fill="x", side="top")
         bar.pack_propagate(False)
 
-        ctk.CTkLabel(bar, text="📈 Stock Analyzer", font=ctk.CTkFont(size=17, weight="bold")).pack(side="left", padx=20)
+        # Bottom border line
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", side="top")
 
-        right = ctk.CTkFrame(bar, fg_color="transparent")
-        right.pack(side="right", padx=15)
+        tk.Label(bar, text="📈  Stock Analyzer", bg=PANEL, fg=TEXT,
+                 font=("SF Pro Display", 16, "bold")).pack(side="left", padx=24)
 
-        self.symbol_entry = ctk.CTkEntry(right, placeholder_text="股票代碼 (e.g. 2330)", width=190)
-        self.symbol_entry.pack(side="left", padx=5, pady=12)
-        self.symbol_entry.bind("<Return>", lambda _: self._start_analysis())
+        right = tk.Frame(bar, bg=PANEL)
+        right.pack(side="right", padx=16)
 
-        self.market_var = ctk.StringVar(value="台股")
-        ctk.CTkOptionMenu(right, variable=self.market_var, values=["台股", "美股"], width=80).pack(side="left", padx=5)
+        # Symbol entry
+        self.symbol_var = tk.StringVar()
+        self._sym_entry = ttk.Entry(right, textvariable=self.symbol_var, width=20)
+        self._sym_entry.pack(side="left", padx=6, pady=12)
+        self._sym_entry.bind("<Return>", lambda _: self._start_analysis())
+        self._sym_entry.insert(0, "股票代碼 (e.g. 2330)")
+        self._sym_entry.bind("<FocusIn>",  lambda e: self._clear_placeholder())
+        self._sym_entry.bind("<FocusOut>", lambda e: self._restore_placeholder())
 
-        self.period_var = ctk.StringVar(value="6個月")
-        ctk.CTkOptionMenu(right, variable=self.period_var, values=["1個月", "3個月", "6個月", "1年", "2年"], width=85).pack(side="left", padx=5)
+        # Market / period
+        self.market_var = tk.StringVar(value="台股")
+        ttk.Combobox(right, textvariable=self.market_var, values=["台股", "美股"],
+                     state="readonly", width=7).pack(side="left", padx=4)
 
-        ctk.CTkButton(right, text="分析", command=self._start_analysis, width=75, fg_color="#2563eb").pack(side="left", padx=5)
-        ctk.CTkButton(right, text="⚙", command=self._open_settings, width=36, fg_color=BORDER).pack(side="left", padx=(5, 0))
+        self.period_var = tk.StringVar(value="6個月")
+        ttk.Combobox(right, textvariable=self.period_var,
+                     values=["1個月", "3個月", "6個月", "1年", "2年"],
+                     state="readonly", width=8).pack(side="left", padx=4)
 
-        self.status_lbl = ctk.CTkLabel(bar, text="", text_color=TEXT_DIM, font=ctk.CTkFont(size=12))
-        self.status_lbl.pack(side="left", padx=20)
+        self._analyze_btn = ttk.Button(right, text="分析", style="Accent.TButton",
+                                       command=self._start_analysis)
+        self._analyze_btn.pack(side="left", padx=(8, 4))
 
-    # ── Body ─────────────────────────────────────────────────────────────────
+        ttk.Button(right, text="⚙", style="Ghost.TButton",
+                   command=self._open_settings, width=3).pack(side="left")
+
+        # Status label (stored directly for colour updates)
+        self._status_lbl = tk.Label(bar, text="", bg=PANEL, fg=DIM,
+                                    font=("SF Pro Display", 11))
+        self._status_lbl.pack(side="left", padx=20)
+
+    def _clear_placeholder(self):
+        if self.symbol_var.get().startswith("股票"):
+            self._sym_entry.delete(0, "end")
+            self._sym_entry.configure(foreground=TEXT)
+
+    def _restore_placeholder(self):
+        if not self.symbol_var.get().strip():
+            self._sym_entry.insert(0, "股票代碼 (e.g. 2330)")
+            self._sym_entry.configure(foreground=DIM)
+
+    # ── Body ──────────────────────────────────────────────────────────────────
 
     def _build_body(self):
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=10, pady=10)
 
         self._build_sidebar(body)
 
-        main = ctk.CTkFrame(body, fg_color="transparent")
+        main = tk.Frame(body, bg=BG)
         main.pack(side="left", fill="both", expand=True, padx=(10, 0))
 
-        # Bottom tabs packed first so expand goes to chart
         self._build_tabs(main)
 
-        self.chart_frame = ctk.CTkFrame(main, fg_color=PANEL_BG, corner_radius=10)
-        self.chart_frame.pack(fill="both", expand=True, pady=(0, 10))
+        self.chart_frame = tk.Frame(main, bg=PANEL)
+        self.chart_frame.pack(fill="both", expand=True, pady=(0, 8))
+        self._show_empty_state()
 
-        self._show_placeholder(self.chart_frame)
+    # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def _build_sidebar(self, parent):
-        sb = ctk.CTkFrame(parent, fg_color=PANEL_BG, width=215, corner_radius=10)
+        sb = tk.Frame(parent, bg=PANEL, width=230)
         sb.pack(side="left", fill="y")
         sb.pack_propagate(False)
 
-        self._sidebar_section(sb, "股票資訊")
+        # ── Stock info card ──
+        self._sb_section_title(sb, "股票資訊")
         self.info_lbl = {}
-        for label, key in [("名稱", "name"), ("代碼", "symbol"), ("現價", "price"),
-                            ("漲跌", "change"), ("漲跌%", "pct"), ("成交量", "volume")]:
-            self.info_lbl[key] = self._sidebar_row(sb, label)
 
-        ctk.CTkFrame(sb, height=1, fg_color=BORDER).pack(fill="x", padx=15, pady=10)
+        # Name (larger, prominent)
+        self._name_lbl = tk.Label(sb, text="—", bg=PANEL, fg=TEXT,
+                                  font=("SF Pro Display", 13, "bold"),
+                                  anchor="w", wraplength=190)
+        self._name_lbl.pack(fill="x", padx=14, pady=(0, 6))
 
-        self._sidebar_section(sb, "技術指標")
+        # Price (hero number)
+        price_row = tk.Frame(sb, bg=PANEL)
+        price_row.pack(fill="x", padx=14, pady=(0, 4))
+        self._price_lbl = tk.Label(price_row, text="—", bg=PANEL, fg=TEXT,
+                                   font=(MONO, 22, "bold"), anchor="w")
+        self._price_lbl.pack(side="left")
+        self._chg_lbl = tk.Label(price_row, text="", bg=PANEL, fg=DIM,
+                                 font=(MONO, 11), anchor="w")
+        self._chg_lbl.pack(side="left", padx=(8, 0))
+
+        # Sub-info rows
+        for label, key in [("代碼", "symbol"), ("成交量", "volume")]:
+            self.info_lbl[key] = self._sb_row(sb, label)
+
+        self._sb_divider(sb)
+
+        # ── Signal badge ──
+        self._sb_section_title(sb, "技術指標")
+
+        badge_frame = tk.Frame(sb, bg=PANEL)
+        badge_frame.pack(fill="x", padx=14, pady=(0, 8))
+        self._signal_badge = tk.Label(badge_frame, text="  —  ", bg=SURFACE, fg=DIM,
+                                      font=("SF Pro Display", 11, "bold"),
+                                      padx=10, pady=4, relief="flat")
+        self._signal_badge.pack(side="left")
+
+        # Indicator rows with value labels
         self.ind_lbl = {}
-        for label, key in [("RSI", "rsi"), ("MACD", "macd"), ("MA20", "ma20"),
-                            ("MA50", "ma50"), ("布林上軌", "bbu"), ("布林下軌", "bbl")]:
-            self.ind_lbl[key] = self._sidebar_row(sb, label)
+        indicator_rows = [
+            ("RSI", "rsi"), ("MACD", "macd"),
+            ("MA20", "ma20"), ("MA50", "ma50"),
+            ("布林上軌", "bbu"), ("布林下軌", "bbl"),
+        ]
+        for label, key in indicator_rows:
+            self.ind_lbl[key] = self._sb_row(sb, label, mono=True)
 
-    def _sidebar_section(self, parent, title):
-        ctk.CTkLabel(parent, text=title, font=ctk.CTkFont(size=13, weight="bold")).pack(pady=(12, 4), padx=15, anchor="w")
+    def _sb_section_title(self, parent, text):
+        tk.Label(parent, text=text.upper(), bg=PANEL, fg=DIM,
+                 font=("SF Pro Display", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
 
-    def _sidebar_row(self, parent, label) -> ctk.CTkLabel:
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=15, pady=2)
-        ctk.CTkLabel(row, text=label + ":", text_color=TEXT_DIM, font=ctk.CTkFont(size=12), width=65, anchor="w").pack(side="left")
-        lbl = ctk.CTkLabel(row, text="—", font=ctk.CTkFont(size=12), anchor="w")
-        lbl.pack(side="left")
-        return lbl
+    def _sb_divider(self, parent):
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=14, pady=8)
+
+    def _sb_row(self, parent, label, mono=False) -> tk.Label:
+        row = tk.Frame(parent, bg=PANEL)
+        row.pack(fill="x", padx=14, pady=1)
+        tk.Label(row, text=label, bg=PANEL, fg=DIM,
+                 font=("SF Pro Display", 11), width=7, anchor="w").pack(side="left")
+        font = (MONO, 11) if mono else ("SF Pro Display", 11)
+        val = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=font, anchor="w")
+        val.pack(side="left")
+        return val
+
+    # ── Tabs ──────────────────────────────────────────────────────────────────
 
     def _build_tabs(self, parent):
-        tab_wrap = ctk.CTkFrame(parent, fg_color="transparent", height=290)
-        tab_wrap.pack(fill="x", side="bottom")
-        tab_wrap.pack_propagate(False)
+        wrap = tk.Frame(parent, bg=CARD, height=290)
+        wrap.pack(fill="x", side="bottom")
+        wrap.pack_propagate(False)
 
-        self.tabs = ctk.CTkTabview(tab_wrap, fg_color=PANEL_BG, segmented_button_fg_color=BORDER)
-        self.tabs.pack(fill="both", expand=True)
+        nb = ttk.Notebook(wrap)
+        nb.pack(fill="both", expand=True)
 
-        for name in ["技術指標圖", "基本面", "AI 分析"]:
-            self.tabs.add(name)
+        # Technical chart tab
+        self.ind_chart_frame = tk.Frame(nb, bg=CARD)
+        nb.add(self.ind_chart_frame, text="  技術指標圖  ")
 
-        self.ind_chart_frame = ctk.CTkFrame(self.tabs.tab("技術指標圖"), fg_color="transparent")
-        self.ind_chart_frame.pack(fill="both", expand=True)
+        # Fundamentals tab (2-column grid)
+        fund_outer = tk.Frame(nb, bg=CARD)
+        nb.add(fund_outer, text="  基本面  ")
+        c = tk.Canvas(fund_outer, bg=CARD, highlightthickness=0)
+        vsb = ttk.Scrollbar(fund_outer, orient="vertical", command=c.yview)
+        c.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        c.pack(side="left", fill="both", expand=True)
+        self.fund_inner = tk.Frame(c, bg=CARD)
+        c.create_window((0, 0), window=self.fund_inner, anchor="nw")
+        self.fund_inner.bind("<Configure>", lambda e: c.configure(scrollregion=c.bbox("all")))
 
-        self.fund_frame = ctk.CTkScrollableFrame(self.tabs.tab("基本面"), fg_color="transparent")
-        self.fund_frame.pack(fill="both", expand=True)
+        # AI tab
+        ai_frame = tk.Frame(nb, bg=CARD)
+        nb.add(ai_frame, text="  AI 分析  ")
+        self.ai_text = scrolledtext.ScrolledText(
+            ai_frame, bg=CARD, fg=TEXT, wrap="word",
+            font=("SF Pro Display", 12), borderwidth=0,
+            insertbackground=TEXT, state="disabled", padx=12, pady=8)
+        self.ai_text.pack(fill="both", expand=True)
+        self._ai_btn = ttk.Button(ai_frame, text="🤖  執行 AI 分析",
+                                  style="AI.TButton", command=self._run_ai)
+        self._ai_btn.pack(pady=6)
 
-        ai_tab = self.tabs.tab("AI 分析")
-        self.ai_text = ctk.CTkTextbox(ai_tab, fg_color=CARD_BG, text_color="#d1d5db", font=ctk.CTkFont(size=13), wrap="word")
-        self.ai_text.pack(fill="both", expand=True, pady=(5, 2))
-        self.ai_btn = ctk.CTkButton(ai_tab, text="🤖 執行 AI 分析", command=self._run_ai, fg_color="#7c3aed", width=140)
-        self.ai_btn.pack(pady=(0, 4))
+    # ── Empty state ───────────────────────────────────────────────────────────
 
-    # ── Placeholder ───────────────────────────────────────────────────────────
-
-    def _show_placeholder(self, frame):
-        ctk.CTkLabel(frame, text="輸入股票代碼並按「分析」開始", text_color=TEXT_DIM, font=ctk.CTkFont(size=14)).place(relx=0.5, rely=0.5, anchor="center")
+    def _show_empty_state(self):
+        for w in self.chart_frame.winfo_children():
+            w.destroy()
+        container = tk.Frame(self.chart_frame, bg=PANEL)
+        container.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(container, text="📊", bg=PANEL, font=("SF Pro Display", 40)).pack()
+        tk.Label(container, text="輸入股票代碼開始分析", bg=PANEL, fg=TEXT,
+                 font=("SF Pro Display", 14, "bold")).pack(pady=(8, 4))
+        tk.Label(container, text="支援台股（2330）及美股（AAPL）", bg=PANEL, fg=DIM,
+                 font=("SF Pro Display", 11)).pack()
 
     # ── Analysis flow ─────────────────────────────────────────────────────────
 
     def _start_analysis(self):
-        symbol = self.symbol_entry.get().strip()
-        if not symbol:
-            self._status("請輸入股票代碼", "#ef4444")
+        if self._loading:
             return
-        self._status("載入資料...", TEXT_DIM)
-        threading.Thread(target=self._fetch, args=(symbol, self.market_var.get(), self.period_var.get()), daemon=True).start()
+        symbol = self.symbol_var.get().strip()
+        if not symbol or symbol.startswith("股票"):
+            self._status("請輸入股票代碼", RED)
+            return
+        self._set_loading(True)
+        self._status("載入資料…", DIM)
+        threading.Thread(
+            target=self._fetch,
+            args=(symbol, self.market_var.get(), self.period_var.get()),
+            daemon=True
+        ).start()
+
+    def _set_loading(self, loading: bool):
+        self._loading = loading
+        state = "disabled" if loading else "normal"
+        self._analyze_btn.configure(state=state)
+        self._analyze_btn.configure(text="分析中…" if loading else "分析")
 
     def _fetch(self, symbol, market, period):
         try:
             data = fetch_stock_data(symbol, market, period)
             self.after(0, lambda: self._update_all(data))
         except Exception as e:
-            self.after(0, lambda: self._status(f"錯誤：{e}", "#ef4444"))
+            self.after(0, lambda: self._on_error(str(e)))
+
+    def _on_error(self, msg):
+        self._set_loading(False)
+        self._status(f"錯誤：{msg}  請確認代碼是否正確", RED)
 
     def _update_all(self, data):
         self.stock_data = data
@@ -158,26 +305,32 @@ class StockAnalyzerApp(ctk.CTk):
         self._draw_kline(data)
         self._draw_indicator_chart(data)
         self._update_fundamentals(data)
-        self.ai_text.delete("0.0", "end")
-        self._status("分析完成", "#10b981")
+        self.ai_text.configure(state="normal")
+        self.ai_text.delete("1.0", "end")
+        self.ai_text.configure(state="disabled")
+        self._set_loading(False)
+        self._status("分析完成 ✓", GREEN)
 
     # ── Sidebar update ────────────────────────────────────────────────────────
 
     def _update_sidebar(self, data):
         hist, info, symbol = data["history"], data["info"], data["symbol"]
-        last, prev = hist.iloc[-1], hist.iloc[-2] if len(hist) > 1 else hist.iloc[-1]
+        last = hist.iloc[-1]
+        prev = hist.iloc[-2] if len(hist) > 1 else last
         price = last["Close"]
         chg = price - prev["Close"]
         pct = chg / prev["Close"] * 100
-        color = "#10b981" if chg >= 0 else "#ef4444"
-        sign = "+" if chg >= 0 else ""
+        up = chg >= 0
+        color = GREEN if up else RED
+        arrow = "▲" if up else "▼"
+        sign  = "+" if up else ""
 
         name = info.get("longName", info.get("shortName", symbol))
-        self.info_lbl["name"].configure(text=name[:16])
+        self._name_lbl.configure(text=name[:24] if name else symbol)
+        self._price_lbl.configure(text=f"{price:,.2f}", fg=color)
+        self._chg_lbl.configure(text=f"{arrow} {sign}{chg:.2f} ({sign}{pct:.2f}%)", fg=color)
+
         self.info_lbl["symbol"].configure(text=symbol)
-        self.info_lbl["price"].configure(text=f"{price:.2f}")
-        self.info_lbl["change"].configure(text=f"{sign}{chg:.2f}", text_color=color)
-        self.info_lbl["pct"].configure(text=f"{sign}{pct:.2f}%", text_color=color)
         self.info_lbl["volume"].configure(text=f"{int(last['Volume']):,}")
 
         def iv(prefix):
@@ -188,46 +341,60 @@ class StockAnalyzerApp(ctk.CTk):
             return "—"
 
         rsi_str = iv("RSI_")
-        self.ind_lbl["rsi"].configure(text=rsi_str,
-            text_color="#ef4444" if rsi_str != "—" and float(rsi_str) > 70
-                       else "#10b981" if rsi_str != "—" and float(rsi_str) < 30 else "#d1d5db")
-        self.ind_lbl["macd"].configure(text=iv("MACD_"))
-        self.ind_lbl["ma20"].configure(text=iv("SMA_20"))
-        self.ind_lbl["ma50"].configure(text=iv("SMA_50"))
-        self.ind_lbl["bbu"].configure(text=iv("BBU_"))
-        self.ind_lbl["bbl"].configure(text=iv("BBL_"))
+        if rsi_str != "—":
+            rsi_val = float(rsi_str)
+            if rsi_val > 70:
+                rsi_color, badge_text, badge_bg = RED, "超買", "#3b1a1a"
+            elif rsi_val < 30:
+                rsi_color, badge_text, badge_bg = GREEN, "超賣", "#1a3b1a"
+            else:
+                rsi_color, badge_text, badge_bg = TEXT, "中性", SURFACE
+            self.ind_lbl["rsi"].configure(text=rsi_str, fg=rsi_color)
+            self._signal_badge.configure(
+                text=f"  RSI {badge_text}  ", fg=rsi_color, bg=badge_bg)
+        else:
+            self.ind_lbl["rsi"].configure(text="—", fg=TEXT)
+
+        self.ind_lbl["macd"].configure(text=iv("MACD_"), fg=TEXT)
+        self.ind_lbl["ma20"].configure(text=iv("SMA_20"), fg=TEXT)
+        self.ind_lbl["ma50"].configure(text=iv("SMA_50"), fg=TEXT)
+        self.ind_lbl["bbu"].configure(text=iv("BBU_"), fg=TEXT)
+        self.ind_lbl["bbl"].configure(text=iv("BBL_"), fg=TEXT)
 
     # ── K-line chart ──────────────────────────────────────────────────────────
 
     def _draw_kline(self, data):
         hist = data["history"]
-        plt.close("all")
         for w in self.chart_frame.winfo_children():
             w.destroy()
 
         df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
 
         add = []
-        for col, color in [("SMA_20", "#60a5fa"), ("SMA_50", "#f59e0b")]:
+        for col, color, lw in [("SMA_20", "#89b4fa", 1.3), ("SMA_50", "#f9e2af", 1.3)]:
             c = find_col(hist, col)
             if c:
-                add.append(mpf.make_addplot(hist[c].values, color=color, width=1.2, panel=0))
-        for col, color in [("BBU_", "#6b7280"), ("BBL_", "#6b7280")]:
+                add.append(mpf.make_addplot(hist[c].values, color=color, width=lw, panel=0))
+        for col in ["BBU_", "BBL_"]:
             c = find_col(hist, col)
             if c:
-                add.append(mpf.make_addplot(hist[c].values, color=color, width=0.8, linestyle="--", panel=0))
+                add.append(mpf.make_addplot(hist[c].values, color=BORDER,
+                                             width=0.7, linestyle="--", panel=0))
 
-        mc = mpf.make_marketcolors(up="#10b981", down="#ef4444", edge="inherit", wick="inherit", volume="inherit")
-        style = mpf.make_mpf_style(base_mpf_style="nightclouds", marketcolors=mc,
-                                   facecolor=PANEL_BG, edgecolor=BORDER, gridcolor="#1f2937", gridstyle="--")
-
+        mc = mpf.make_marketcolors(up=GREEN, down=RED, edge="inherit",
+                                    wick="inherit", volume="inherit")
+        style = mpf.make_mpf_style(
+            base_mpf_style="nightclouds", marketcolors=mc,
+            facecolor=PANEL, edgecolor=BORDER,
+            gridcolor="#313244", gridstyle="--")
         kwargs = dict(type="candle", volume=True, style=style, returnfig=True,
-                      figsize=(13, 5), title=f"\n{data['symbol']}", warn_too_much_data=9999)
+                      figsize=(13, 5), title=f"\n{data['symbol']}",
+                      warn_too_much_data=9999)
         if add:
             kwargs["addplot"] = add
 
         fig, _ = mpf.plot(df, **kwargs)
-        fig.patch.set_facecolor(PANEL_BG)
+        fig.patch.set_facecolor(PANEL)
 
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
@@ -240,51 +407,64 @@ class StockAnalyzerApp(ctk.CTk):
         for w in self.ind_chart_frame.winfo_children():
             w.destroy()
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 3.2), facecolor=PANEL_BG)
+        fig = Figure(figsize=(13, 3), facecolor=CARD)
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax2 = fig.add_subplot(2, 1, 2)
 
         rsi_col = find_col(hist, "RSI_")
         if rsi_col:
             rsi = hist[rsi_col].dropna()
-            ax1.plot(range(len(rsi)), rsi.values, color="#a78bfa", linewidth=1.5)
-            ax1.axhline(70, color="#ef4444", linestyle="--", alpha=0.6, linewidth=0.8)
-            ax1.axhline(30, color="#10b981", linestyle="--", alpha=0.6, linewidth=0.8)
+            x   = range(len(rsi))
+            ax1.plot(x, rsi.values, color=PURPLE, linewidth=1.5)
+            ax1.fill_between(x, 70, rsi.values, where=(rsi.values > 70),
+                             alpha=0.15, color=RED)
+            ax1.fill_between(x, 30, rsi.values, where=(rsi.values < 30),
+                             alpha=0.15, color=GREEN)
+            ax1.axhline(70, color=RED,   linestyle="--", alpha=0.5, linewidth=0.8)
+            ax1.axhline(30, color=GREEN, linestyle="--", alpha=0.5, linewidth=0.8)
+            ax1.axhline(50, color=DIM,   linestyle=":",  alpha=0.3, linewidth=0.6)
             ax1.set_ylim(0, 100)
-            ax1.set_ylabel("RSI", color=TEXT_DIM, fontsize=10)
+            ax1.set_ylabel("RSI", color=DIM, fontsize=9)
+            ax1.text(len(rsi) - 1, rsi.values[-1], f" {rsi.values[-1]:.1f}",
+                     color=PURPLE, fontsize=8, va="center")
 
         macd_col = find_col(hist, "MACD_1")
-        sig_col = find_col(hist, "MACDs_")
+        sig_col  = find_col(hist, "MACDs_")
         hist_col = find_col(hist, "MACDh_")
         if macd_col and sig_col:
             macd = hist[macd_col].dropna()
-            sig = hist[sig_col].reindex(macd.index)
-            x = range(len(macd))
-            ax2.plot(x, macd.values, color="#60a5fa", linewidth=1.2, label="MACD")
-            ax2.plot(x, sig.values, color="#f59e0b", linewidth=1.2, label="Signal")
+            sig  = hist[sig_col].reindex(macd.index)
+            x    = range(len(macd))
+            ax2.plot(x, macd.values, color=ACCENT, linewidth=1.2, label="MACD")
+            ax2.plot(x, sig.values,  color=YELLOW,  linewidth=1.2, label="Signal")
             if hist_col:
                 hv = hist[hist_col].reindex(macd.index).values
-                ax2.bar(x, hv, color=["#10b981" if v >= 0 else "#ef4444" for v in hv], alpha=0.5, width=0.8)
-            ax2.set_ylabel("MACD", color=TEXT_DIM, fontsize=10)
-            ax2.legend(loc="upper left", fontsize=9, framealpha=0.3, labelcolor="#d1d5db")
+                ax2.bar(x, hv, color=[GREEN if v >= 0 else RED for v in hv],
+                        alpha=0.5, width=0.8)
+            ax2.axhline(0, color=DIM, linewidth=0.5, alpha=0.5)
+            ax2.set_ylabel("MACD", color=DIM, fontsize=9)
+            ax2.legend(loc="upper left", fontsize=8, framealpha=0.2,
+                       labelcolor=TEXT, facecolor=CARD)
 
         for ax in (ax1, ax2):
-            ax.set_facecolor(CARD_BG)
-            ax.tick_params(colors="#6b7280", labelsize=8)
+            ax.set_facecolor(CARD)
+            ax.tick_params(colors=DIM, labelsize=8)
             for spine in ax.spines.values():
                 spine.set_color(BORDER)
 
-        fig.tight_layout(pad=0.5)
+        fig.tight_layout(pad=0.4)
         canvas = FigureCanvasTkAgg(fig, master=self.ind_chart_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-    # ── Fundamentals tab ──────────────────────────────────────────────────────
+    # ── Fundamentals (2-column grid) ─────────────────────────────────────────
 
     def _update_fundamentals(self, data):
         info = data["info"]
-        for w in self.fund_frame.winfo_children():
+        for w in self.fund_inner.winfo_children():
             w.destroy()
 
-        def fmt_num(key, scale=1, suffix=""):
+        def fmt(key, scale=1, suffix=""):
             v = info.get(key)
             if v is None:
                 return "—"
@@ -293,39 +473,47 @@ class StockAnalyzerApp(ctk.CTk):
             except Exception:
                 return str(v)
 
-        rows = [
-            ("市值", lambda: f"{info.get('marketCap', 0):,}" if info.get("marketCap") else "—"),
-            ("本益比 P/E", lambda: fmt_num("trailingPE")),
-            ("EPS", lambda: fmt_num("trailingEps")),
-            ("股息殖利率", lambda: fmt_num("dividendYield", 100, "%")),
-            ("52週最高", lambda: fmt_num("fiftyTwoWeekHigh")),
-            ("52週最低", lambda: fmt_num("fiftyTwoWeekLow")),
-            ("Beta", lambda: fmt_num("beta")),
-            ("產業", lambda: info.get("sector", "—")),
+        items = [
+            ("市值",       lambda: f"{info['marketCap']:,}" if info.get("marketCap") else "—"),
+            ("本益比",     lambda: fmt("trailingPE")),
+            ("EPS",        lambda: fmt("trailingEps")),
+            ("殖利率",     lambda: fmt("dividendYield", 100, "%")),
+            ("52W 高",     lambda: fmt("fiftyTwoWeekHigh")),
+            ("52W 低",     lambda: fmt("fiftyTwoWeekLow")),
+            ("Beta",       lambda: fmt("beta")),
+            ("產業",       lambda: info.get("sector", "—")),
         ]
 
-        for label, fn in rows:
+        # 2-column grid layout
+        for i, (label, fn) in enumerate(items):
             try:
                 value = fn()
             except Exception:
                 value = "—"
-            row = ctk.CTkFrame(self.fund_frame, fg_color=CARD_BG, corner_radius=6)
-            row.pack(fill="x", pady=2, padx=4)
-            ctk.CTkLabel(row, text=label, text_color=TEXT_DIM, font=ctk.CTkFont(size=12), width=110, anchor="w").pack(side="left", padx=10, pady=6)
-            ctk.CTkLabel(row, text=value, font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(side="left")
+            col = i % 2
+            row_idx = i // 2
+            cell = tk.Frame(self.fund_inner, bg=SURFACE, padx=10, pady=8)
+            cell.grid(row=row_idx, column=col, padx=4, pady=4, sticky="ew")
+            self.fund_inner.columnconfigure(col, weight=1)
+            tk.Label(cell, text=label, bg=SURFACE, fg=DIM,
+                     font=("SF Pro Display", 10)).pack(anchor="w")
+            tk.Label(cell, text=value, bg=SURFACE, fg=TEXT,
+                     font=(MONO, 13, "bold")).pack(anchor="w", pady=(2, 0))
 
     # ── AI analysis ───────────────────────────────────────────────────────────
 
     def _run_ai(self):
         if not self.stock_data:
-            self._status("請先執行股票分析", "#ef4444")
+            self._status("請先執行股票分析", RED)
             return
         if not get_api_key():
             self._open_settings()
             return
-        self.ai_btn.configure(state="disabled", text="分析中...")
-        self.ai_text.delete("0.0", "end")
-        self.ai_text.insert("0.0", "AI 分析中，請稍候...\n")
+        self._ai_btn.configure(state="disabled", text="分析中…")
+        self.ai_text.configure(state="normal")
+        self.ai_text.delete("1.0", "end")
+        self.ai_text.insert("end", "AI 分析中，請稍候…\n")
+        self.ai_text.configure(state="disabled")
         threading.Thread(target=self._fetch_ai, daemon=True).start()
 
     def _fetch_ai(self):
@@ -337,14 +525,16 @@ class StockAnalyzerApp(ctk.CTk):
         self.after(0, lambda: self._show_ai(result))
 
     def _show_ai(self, text):
-        self.ai_text.delete("0.0", "end")
-        self.ai_text.insert("0.0", text)
-        self.ai_btn.configure(state="normal", text="🤖 執行 AI 分析")
+        self.ai_text.configure(state="normal")
+        self.ai_text.delete("1.0", "end")
+        self.ai_text.insert("end", text)
+        self.ai_text.configure(state="disabled")
+        self._ai_btn.configure(state="normal", text="🤖  執行 AI 分析")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _status(self, msg, color=TEXT_DIM):
-        self.status_lbl.configure(text=msg, text_color=color)
+    def _status(self, msg, color=DIM):
+        self._status_lbl.configure(text=msg, fg=color)
 
     def _open_settings(self):
         SettingsDialog(self)
