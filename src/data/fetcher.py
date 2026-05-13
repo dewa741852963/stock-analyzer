@@ -69,6 +69,35 @@ def find_col(hist: pd.DataFrame, prefix: str):
     return None
 
 
+INTERVAL_MAP = {
+    "分時": ("1d",  "1m"),
+    "日線": (None,  "1d"),   # period from PERIODS, interval daily
+    "週線": ("2y",  "1wk"),
+    "月線": ("5y",  "1mo"),
+}
+
+
+def fetch_interval_data(symbol: str, interval_label: str, period_label: str = "6個月") -> dict:
+    """依時間週期取得 OHLCV，用於切換 分時/日線/週線/月線。"""
+    period_override, interval = INTERVAL_MAP[interval_label]
+    period = period_override or PERIODS.get(period_label, "6mo")
+
+    ticker = yf.Ticker(symbol)
+    hist = ticker.history(period=period, interval=interval)
+
+    if hist.empty:
+        raise ValueError(f"無資料：{symbol} ({interval_label})")
+
+    if hasattr(hist.index, "tz") and hist.index.tz is not None:
+        hist.index = hist.index.tz_localize(None)
+
+    # 日線以外不計算技術指標（資料點不足或無意義）
+    if interval_label == "日線":
+        _add_indicators(hist)
+
+    return {"symbol": symbol, "history": hist, "info": {}}
+
+
 def fetch_live_price(symbol: str) -> dict:
     """輕量級即時報價，不計算指標，用於自動刷新。"""
     ticker = yf.Ticker(symbol)

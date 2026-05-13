@@ -9,7 +9,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import mplfinance as mpf
 import pandas as pd
 
-from src.data.fetcher import fetch_stock_data, find_col, fetch_live_price, is_trading_hours
+from src.data.fetcher import (fetch_stock_data, find_col, fetch_live_price,
+                               is_trading_hours, fetch_interval_data)
 from src.config import get_api_key, get as cfg_get
 from src.ui.settings_dialog import SettingsDialog
 
@@ -69,6 +70,7 @@ class StockAnalyzerApp(tk.Tk):
         self.stock_data = None
         self._loading = False
         self._refresh_job = None
+        self._interval = "日線"
         self._build_toolbar()
         self._build_body()
         self.update_idletasks()
@@ -143,6 +145,19 @@ class StockAnalyzerApp(tk.Tk):
         main.pack(side="left", fill="both", expand=True, padx=(10, 0))
 
         self._build_tabs(main)
+
+        # Interval switcher
+        interval_bar = tk.Frame(main, bg=BG)
+        interval_bar.pack(fill="x", pady=(0, 4))
+        self._interval_btns = {}
+        for label in ["分時", "日線", "週線", "月線"]:
+            btn = tk.Button(interval_bar, text=label, bg=SURFACE, fg=DIM,
+                            relief="flat", font=("SF Pro Display", 11),
+                            padx=14, pady=4, cursor="hand2",
+                            command=lambda l=label: self._switch_interval(l))
+            btn.pack(side="left", padx=(0, 2))
+            self._interval_btns[label] = btn
+        self._highlight_interval("日線")
 
         self.chart_frame = tk.Frame(main, bg=PANEL)
         self.chart_frame.pack(fill="both", expand=True, pady=(0, 8))
@@ -310,6 +325,8 @@ class StockAnalyzerApp(tk.Tk):
 
     def _update_all(self, data):
         self.stock_data = data
+        self._interval = "日線"
+        self._highlight_interval("日線")
         self._update_sidebar(data)
         self._draw_kline(data)
         self._draw_indicator_chart(data)
@@ -370,6 +387,97 @@ class StockAnalyzerApp(tk.Tk):
         self.ind_lbl["ma50"].configure(text=iv("SMA_50"), fg=TEXT)
         self.ind_lbl["bbu"].configure(text=iv("BBU_"), fg=TEXT)
         self.ind_lbl["bbl"].configure(text=iv("BBL_"), fg=TEXT)
+
+    # ── Interval switcher ─────────────────────────────────────────────────────
+
+    def _highlight_interval(self, label: str):
+        for l, btn in self._interval_btns.items():
+            if l == label:
+                btn.configure(bg=ACCENT, fg=BG, font=("SF Pro Display", 11, "bold"))
+            else:
+                btn.configure(bg=SURFACE, fg=DIM, font=("SF Pro Display", 11))
+
+    def _switch_interval(self, label: str):
+        if not self.stock_data:
+            return
+        if label == self._interval:
+            return
+        self._interval = label
+        self._highlight_interval(label)
+
+        symbol = self.stock_data["symbol"]
+        self._status(f"載入{label}…", DIM)
+        threading.Thread(target=self._fetch_interval, args=(symbol, label), daemon=True).start()
+
+    def _fetch_interval(self, symbol: str, label: str):
+        try:
+            period = self.period_var.get()
+            data = fetch_interval_data(symbol, label, period)
+            self.after(0, lambda: self._draw_chart_for_interval(data, label))
+        except Exception as e:
+            self.after(0, lambda: self._status(f"錯誤：{e}", RED))
+
+    def _draw_chart_for_interval(self, data: dict, label: str):
+        if label == "分時":
+            self._draw_intraday(data)
+        else:
+            self._draw_kline(data)
+        self._status("完成 ✓", GREEN)
+
+    # ── Intraday chart (分時) ─────────────────────────────────────────────────
+
+    def _draw_intraday(self, data: dict):
+        hist = data["history"]
+        symbol = data["symbol"]
+        for w in self.chart_frame.winfo_children():
+            w.destroy()
+
+        fig = Figure(figsize=(13, 5), facecolor=PANEL)
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_facecolor(CARD)
+
+        if hist.empty:
+            ax.text(0.5, 0.5, "今日無分時資料（非交易日）",
+                    ha="center", va="center", color=DIM, fontsize=12,
+                    transform=ax.transAxes)
+        else:
+            close = hist["Close"]
+            prev_close = hist["Close"].iloc[0]
+            x = range(len(close))
+
+            color_line = GREEN if close.iloc[-1] >= prev_close else RED
+            ax.plot(x, close.values, color=color_line, linewidth=1.5)
+            ax.fill_between(x, close.values, prev_close,
+                            where=(close.values >= prev_close),
+                            alpha=0.12, color=GREEN)
+            ax.fill_between(x, close.values, prev_close,
+                            where=(close.values < prev_close),
+                            alpha=0.12, color=RED)
+            ax.axhline(prev_close, color=DIM, linewidth=0.8, linestyle="--", alpha=0.6)
+
+            # X 軸顯示時間
+            n = len(hist)
+            step = max(n // 6, 1)
+            ticks = list(range(0, n, step))
+            labels = [hist.index[i].strftime("%H:%M") for i in ticks]
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(labels, fontsize=8)
+
+            current = close.iloc[-1]
+            chg_pct = (current - prev_close) / prev_close * 100
+            sign = "+" if chg_pct >= 0 else ""
+            ax.set_title(f"{symbol}  分時走勢    {current:.2f}  {sign}{chg_pct:.2f}%",
+                         color=color_line, fontsize=11, pad=8)
+
+        for spine in ax.spines.values():
+            spine.set_color(BORDER)
+        ax.tick_params(colors=DIM, labelsize=8)
+        fig.tight_layout(pad=0.8)
+        fig.patch.set_facecolor(PANEL)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
 
     # ── K-line chart ──────────────────────────────────────────────────────────
 
