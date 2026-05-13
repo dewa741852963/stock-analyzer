@@ -520,7 +520,7 @@ class StockAnalyzerApp(tk.Tk):
         fig.tight_layout(pad=0.8)
         fig.patch.set_facecolor(PANEL)
 
-        self._embed_chart(fig, self.chart_frame)
+        self._embed_chart(fig, self.chart_frame, df=hist)
 
     # ── K-line chart ──────────────────────────────────────────────────────────
 
@@ -556,7 +556,7 @@ class StockAnalyzerApp(tk.Tk):
 
         fig, axes = mpf.plot(df, **kwargs)
         fig.patch.set_facecolor(PANEL)
-        self._embed_chart(fig, self.chart_frame, axes=axes)
+        self._embed_chart(fig, self.chart_frame, axes=axes, df=df)
 
     # ── Indicator chart ───────────────────────────────────────────────────────
 
@@ -611,7 +611,8 @@ class StockAnalyzerApp(tk.Tk):
                 spine.set_color(BORDER)
 
         fig.tight_layout(pad=0.4)
-        self._embed_chart(fig, self.ind_chart_frame, axes=[ax1, ax2])
+        # pass hist for date mapping; rsi/macd are subsets so use full hist index
+        self._embed_chart(fig, self.ind_chart_frame, axes=[ax1, ax2], df=hist)
 
     # ── Fundamentals (2-column grid) ─────────────────────────────────────────
 
@@ -696,13 +697,13 @@ class StockAnalyzerApp(tk.Tk):
 
     # ── Chart embedding helper ────────────────────────────────────────────────
 
-    def _embed_chart(self, fig, parent, axes=None):
-        """Embed a matplotlib Figure into a tkinter parent with zoom toolbar."""
+    def _embed_chart(self, fig, parent, axes=None, df=None):
+        """Embed figure with zoom toolbar + TradingView-style crosshair."""
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # Toolbar
+        # ── Toolbar ──────────────────────────────────────────────────────────
         tb_frame = tk.Frame(parent, bg=PANEL)
         tb_frame.pack(fill="x", side="bottom")
         toolbar = NavigationToolbar2Tk(canvas, tb_frame)
@@ -716,25 +717,119 @@ class StockAnalyzerApp(tk.Tk):
                 pass
         toolbar.update()
 
-        # Scroll-wheel zoom on all axes
-        target_axes = axes if axes else (fig.get_axes() or [])
-        if not isinstance(target_axes, (list, tuple)):
-            target_axes = [target_axes]
+        all_axes = axes if axes else (fig.get_axes() or [])
+        if not isinstance(all_axes, (list, tuple)):
+            all_axes = [all_axes]
 
+        # ── Scroll-wheel zoom ─────────────────────────────────────────────────
         def _on_scroll(event):
             if event.inaxes is None:
                 return
             ax = event.inaxes
             factor = 0.85 if event.button == "up" else 1.18
-            xlim = ax.get_xlim()
-            ylim = ax.get_ylim()
-            cx = event.xdata if event.xdata is not None else (xlim[0] + xlim[1]) / 2
-            cy = event.ydata if event.ydata is not None else (ylim[0] + ylim[1]) / 2
-            ax.set_xlim([cx - (cx - xlim[0]) * factor, cx + (xlim[1] - cx) * factor])
-            ax.set_ylim([cy - (cy - ylim[0]) * factor, cy + (ylim[1] - cy) * factor])
+            xlim, ylim = ax.get_xlim(), ax.get_ylim()
+            cx = event.xdata if event.xdata is not None else (xlim[0]+xlim[1])/2
+            cy = event.ydata if event.ydata is not None else (ylim[0]+ylim[1])/2
+            ax.set_xlim([cx-(cx-xlim[0])*factor, cx+(xlim[1]-cx)*factor])
+            ax.set_ylim([cy-(cy-ylim[0])*factor, cy+(ylim[1]-cy)*factor])
             canvas.draw_idle()
 
         canvas.mpl_connect("scroll_event", _on_scroll)
+
+        # ── Crosshair ─────────────────────────────────────────────────────────
+        v_lines = [ax.axvline(x=0, color=DIM, lw=0.8, ls="--",
+                              alpha=0.85, visible=False) for ax in all_axes]
+        h_lines = [ax.axhline(y=0, color=DIM, lw=0.8, ls="--",
+                              alpha=0.85, visible=False) for ax in all_axes]
+
+        # Price label on right edge of each panel
+        price_ann = []
+        for ax in all_axes:
+            ann = ax.annotate("", xy=(1, 0.5), xycoords="axes fraction",
+                              xytext=(3, 0), textcoords="offset points",
+                              color=BG, fontsize=8, va="center", ha="left",
+                              bbox=dict(boxstyle="round,pad=0.25",
+                                        fc=TEXT, ec=TEXT, alpha=0.95),
+                              clip_on=False, visible=False, zorder=15)
+            price_ann.append(ann)
+
+        # Date label below last panel
+        date_ann = all_axes[-1].annotate(
+            "", xy=(0.5, 0), xycoords="axes fraction",
+            xytext=(0, -3), textcoords="offset points",
+            color=BG, fontsize=8, va="top", ha="center",
+            bbox=dict(boxstyle="round,pad=0.25", fc=TEXT, ec=TEXT, alpha=0.95),
+            clip_on=False, visible=False, zorder=15)
+
+        # OHLCV info box (top-left of first panel, only for price charts)
+        has_ohlcv = df is not None and "Close" in df.columns
+        info_ann = all_axes[0].annotate(
+            "", xy=(0, 1), xycoords="axes fraction",
+            xytext=(6, -4), textcoords="offset points",
+            color=TEXT, fontsize=8.5, va="top", ha="left",
+            bbox=dict(boxstyle="round,pad=0.4", fc=CARD, ec=BORDER, alpha=0.92),
+            clip_on=False, visible=False, zorder=15,
+            fontfamily="monospace") if has_ohlcv else None
+
+        def _hide_all():
+            for vl, hl, pa in zip(v_lines, h_lines, price_ann):
+                vl.set_visible(False); hl.set_visible(False); pa.set_visible(False)
+            date_ann.set_visible(False)
+            if info_ann: info_ann.set_visible(False)
+
+        def _on_move(event):
+            if event.inaxes is None or event.xdata is None:
+                _hide_all(); canvas.draw_idle(); return
+
+            x, y = event.xdata, event.ydata
+
+            for vl in v_lines:
+                vl.set_xdata([x]); vl.set_visible(True)
+
+            for ax, hl, pa in zip(all_axes, h_lines, price_ann):
+                if ax == event.inaxes:
+                    hl.set_ydata([y]); hl.set_visible(True)
+                    ylim = ax.get_ylim()
+                    yf = (y-ylim[0])/(ylim[1]-ylim[0]) if ylim[1]!=ylim[0] else .5
+                    pa.xy = (1, max(.01, min(.99, yf)))
+                    pa.set_text(f" {y:,.2f} ")
+                    pa.set_visible(True)
+                else:
+                    hl.set_visible(False); pa.set_visible(False)
+
+            if df is not None:
+                xi = int(round(x))
+                if 0 <= xi < len(df):
+                    xlim = all_axes[-1].get_xlim()
+                    xf = (x-xlim[0])/(xlim[1]-xlim[0]) if xlim[1]!=xlim[0] else .5
+                    ts = df.index[xi]
+                    fmt = "%Y-%m-%d %H:%M" if hasattr(ts, 'hour') and ts.hour else "%Y-%m-%d"
+                    date_ann.xy = (max(.06, min(.94, xf)), 0)
+                    date_ann.set_text(f" {ts.strftime(fmt)} ")
+                    date_ann.set_visible(True)
+
+                    if info_ann is not None:
+                        row = df.iloc[xi]
+                        o = float(row.get("Open")  or 0)
+                        h2= float(row.get("High")  or 0)
+                        lo= float(row.get("Low")   or 0)
+                        c = float(row.get("Close") or 0)
+                        v = float(row.get("Volume")or 0)
+                        chg = c - o
+                        info_ann.set_text(
+                            f"O:{o:.2f}  H:{h2:.2f}  L:{lo:.2f}  C:{c:.2f}"
+                            f"  {'▲' if chg>=0 else '▼'}{abs(chg):.2f}"
+                            f"  Vol:{int(v):,}"
+                        )
+                        info_ann.set_visible(True)
+                else:
+                    date_ann.set_visible(False)
+                    if info_ann: info_ann.set_visible(False)
+
+            canvas.draw_idle()
+
+        canvas.mpl_connect("motion_notify_event", _on_move)
+        canvas.mpl_connect("figure_leave_event", lambda e: (_hide_all(), canvas.draw_idle()))
         return canvas
 
     # ── Helpers ───────────────────────────────────────────────────────────────
