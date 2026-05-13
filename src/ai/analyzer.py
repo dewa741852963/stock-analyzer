@@ -77,7 +77,16 @@ def _analyze_gemini(data: dict) -> str:
             return "Gemini 未回傳內容，請稍後再試。"
         return text
     except Exception as e:
-        return f"Gemini 連線失敗：{e}"
+        err = str(e)
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            return (
+                "❌ Gemini 免費配額已用盡（429 RESOURCE_EXHAUSTED）\n\n"
+                "請至 aistudio.google.com/apikey 建立新的 API Key，\n"
+                "或稍後再試（配額每分鐘/每日重置）。"
+            )
+        if "401" in err or "API_KEY_INVALID" in err:
+            return "❌ API Key 無效，請重新設定。"
+        return f"Gemini 連線失敗：{err}"
 
 
 def _analyze_ollama(data: dict) -> str:
