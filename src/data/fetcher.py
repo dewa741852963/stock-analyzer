@@ -67,3 +67,31 @@ def find_col(hist: pd.DataFrame, prefix: str):
         if c.startswith(prefix):
             return c
     return None
+
+
+def fetch_live_price(symbol: str) -> dict:
+    """輕量級即時報價，不計算指標，用於自動刷新。"""
+    ticker = yf.Ticker(symbol)
+    fi = ticker.fast_info
+    return {
+        "price":      getattr(fi, "last_price", None),
+        "prev_close": getattr(fi, "previous_close", None),
+        "volume":     getattr(fi, "last_volume", None),
+    }
+
+
+def is_trading_hours(market: str) -> bool:
+    """判斷目前是否在交易時段。"""
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, time as t
+
+    if market == "台股":
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        if now.weekday() >= 5:
+            return False
+        return t(9, 0) <= now.time() <= t(13, 30)
+    else:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        if now.weekday() >= 5:
+            return False
+        return t(9, 30) <= now.time() <= t(16, 0)

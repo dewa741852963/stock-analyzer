@@ -1,14 +1,16 @@
 import threading
+import sys
+import os
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import mplfinance as mpf
 import pandas as pd
 
-from src.data.fetcher import fetch_stock_data, find_col
-from src.config import get_api_key
+from src.data.fetcher import fetch_stock_data, find_col, fetch_live_price, is_trading_hours
+from src.config import get_api_key, get as cfg_get
 from src.ui.settings_dialog import SettingsDialog
 
 # ── Catppuccin Mocha palette ─────────────────────────────────────────────────
@@ -66,9 +68,11 @@ class StockAnalyzerApp(tk.Tk):
 
         self.stock_data = None
         self._loading = False
+        self._refresh_job = None
         self._build_toolbar()
         self._build_body()
         self.update_idletasks()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── Toolbar ───────────────────────────────────────────────────────────────
 
@@ -154,6 +158,11 @@ class StockAnalyzerApp(tk.Tk):
         # ── Stock info card ──
         self._sb_section_title(sb, "股票資訊")
         self.info_lbl = {}
+
+        # Live indicator
+        self._live_lbl = tk.Label(sb, text="", bg=PANEL, fg=DIM,
+                                  font=("SF Pro Display", 10))
+        self._live_lbl.pack(anchor="w", padx=14, pady=(0, 4))
 
         # Name (larger, prominent)
         self._name_lbl = tk.Label(sb, text="—", bg=PANEL, fg=TEXT,
@@ -310,6 +319,7 @@ class StockAnalyzerApp(tk.Tk):
         self.ai_text.configure(state="disabled")
         self._set_loading(False)
         self._status("分析完成 ✓", GREEN)
+        self._start_live_refresh()
 
     # ── Sidebar update ────────────────────────────────────────────────────────
 
@@ -506,7 +516,11 @@ class StockAnalyzerApp(tk.Tk):
         if not self.stock_data:
             self._status("請先執行股票分析", RED)
             return
-        if not get_api_key():
+        provider = cfg_get("ai_provider")
+        if provider == "gemini" and not get_api_key():
+            self._open_settings()
+            return
+        if provider == "custom" and not cfg_get("custom_url"):
             self._open_settings()
             return
         self._ai_btn.configure(state="disabled", text="分析中…")
@@ -535,6 +549,76 @@ class StockAnalyzerApp(tk.Tk):
 
     def _status(self, msg, color=DIM):
         self._status_lbl.configure(text=msg, fg=color)
+
+    # ── Live price refresh ────────────────────────────────────────────────────
+
+    def _start_live_refresh(self):
+        if self._refresh_job:
+            self.after_cancel(self._refresh_job)
+        self._do_live_refresh()
+
+    def _do_live_refresh(self):
+        if not self.stock_data:
+            return
+        market = self.market_var.get()
+        symbol = self.stock_data["symbol"]
+        trading = is_trading_hours(market)
+
+        if trading:
+            self._live_lbl.configure(text="🟢 即時更新中", fg=GREEN)
+            threading.Thread(target=self._fetch_live, args=(symbol,), daemon=True).start()
+        else:
+            from datetime import datetime
+            now = datetime.now().strftime("%H:%M")
+            self._live_lbl.configure(text=f"⚫ 非交易時段  {now}", fg=DIM)
+
+        # 交易時段 30 秒刷新；非交易時段 60 秒檢查一次
+        interval = 30_000 if trading else 60_000
+        self._refresh_job = self.after(interval, self._do_live_refresh)
+
+    def _fetch_live(self, symbol: str):
+        try:
+            live = fetch_live_price(symbol)
+            self.after(0, lambda: self._apply_live_price(live))
+        except Exception:
+            pass
+
+    def _apply_live_price(self, live: dict):
+        price = live.get("price")
+        prev  = live.get("prev_close")
+        vol   = live.get("volume")
+        if price is None or prev is None:
+            return
+
+        chg = price - prev
+        pct = chg / prev * 100
+        up  = chg >= 0
+        color = GREEN if up else RED
+        arrow = "▲" if up else "▼"
+        sign  = "+" if up else ""
+
+        self._price_lbl.configure(text=f"{price:,.2f}", fg=color)
+        self._chg_lbl.configure(
+            text=f"{arrow} {sign}{chg:.2f} ({sign}{pct:.2f}%)", fg=color)
+        if vol:
+            self.info_lbl["volume"].configure(text=f"{int(vol):,}")
+
+        from datetime import datetime
+        self._live_lbl.configure(
+            text=f"🟢 即時  更新於 {datetime.now().strftime('%H:%M:%S')}",
+            fg=GREEN)
+
+    def _on_close(self):
+        if messagebox.askyesno(
+            title="關閉程式",
+            message="確定要關閉 Stock Analyzer 嗎？",
+            icon="question",
+            default="no",
+        ):
+            if self._refresh_job:
+                self.after_cancel(self._refresh_job)
+            self.destroy()
+            os._exit(0)
 
     def _open_settings(self):
         SettingsDialog(self)
