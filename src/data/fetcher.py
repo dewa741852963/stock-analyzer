@@ -40,7 +40,7 @@ def fetch_stock_data(symbol: str, market: str, period_label: str) -> dict:
             info = load_info(ticker_sym) or {}
 
         # 儲存至本地資料庫
-        save_history(ticker_sym, "日線", period_label, hist)
+        save_history(ticker_sym, "日線", hist)
         save_info(ticker_sym, info)
 
         return {"symbol": ticker_sym, "history": hist, "info": info,
@@ -50,6 +50,7 @@ def fetch_stock_data(symbol: str, market: str, period_label: str) -> dict:
         # 網路失敗 → 嘗試讀取快取
         hist, cached_at = load_history(ticker_sym, "日線", period_label)
         if hist is not None:
+            _add_indicators(hist)
             info = load_info(ticker_sym) or {}
             return {"symbol": ticker_sym, "history": hist, "info": info,
                     "from_cache": True, "cached_at": cached_at}
@@ -117,7 +118,7 @@ def fetch_interval_data(symbol: str, interval_label: str, period_label: str = "6
             _add_indicators(hist)
 
         if use_cache:
-            save_history(symbol, interval_label, period_label, hist)
+            save_history(symbol, interval_label, hist)
 
         return {"symbol": symbol, "history": hist, "info": {},
                 "from_cache": False}
@@ -126,6 +127,8 @@ def fetch_interval_data(symbol: str, interval_label: str, period_label: str = "6
         if use_cache:
             hist, cached_at = load_history(symbol, interval_label, period_label)
             if hist is not None:
+                if interval_label == "日線":
+                    _add_indicators(hist)
                 return {"symbol": symbol, "history": hist, "info": {},
                         "from_cache": True, "cached_at": cached_at}
         raise net_err

@@ -1,11 +1,18 @@
 import sqlite3
 import json
-import io
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
 DB_PATH = Path.home() / ".stock_analyzer" / "cache.db"
+
+PERIOD_DAYS = {
+    "1個月": 31,
+    "3個月": 92,
+    "6個月": 183,
+    "1年": 365,
+    "2年": 730,
+}
 
 
 def _conn() -> sqlite3.Connection:
@@ -18,13 +25,16 @@ def _conn() -> sqlite3.Connection:
 
 def _init(conn: sqlite3.Connection):
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS history_cache (
-            symbol        TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS history_ohlcv (
+            symbol         TEXT NOT NULL,
             interval_label TEXT NOT NULL,
-            period_label  TEXT NOT NULL,
-            data          TEXT NOT NULL,
-            updated_at    TEXT NOT NULL,
-            PRIMARY KEY (symbol, interval_label, period_label)
+            date           TEXT NOT NULL,
+            open           REAL,
+            high           REAL,
+            low            REAL,
+            close          REAL,
+            volume         REAL,
+            PRIMARY KEY (symbol, interval_label, date)
         );
         CREATE TABLE IF NOT EXISTS info_cache (
             symbol     TEXT PRIMARY KEY,
@@ -37,13 +47,22 @@ def _init(conn: sqlite3.Connection):
 
 # ── Save ─────────────────────────────────────────────────────────────────────
 
-def save_history(symbol: str, interval_label: str, period_label: str,
-                 hist: pd.DataFrame):
+def save_history(symbol: str, interval_label: str, hist: pd.DataFrame):
+    rows = []
+    for ts, row in hist.iterrows():
+        date_str = pd.Timestamp(ts).strftime("%Y-%m-%dT%H:%M:%S")
+        rows.append((
+            symbol, interval_label, date_str,
+            _f(row.get("Open")),
+            _f(row.get("High")),
+            _f(row.get("Low")),
+            _f(row.get("Close")),
+            _f(row.get("Volume")),
+        ))
     with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO history_cache VALUES (?,?,?,?,?)",
-            (symbol, interval_label, period_label,
-             hist.to_json(date_format="iso"), _now()),
+        conn.executemany(
+            "INSERT OR REPLACE INTO history_ohlcv VALUES (?,?,?,?,?,?,?,?)",
+            rows,
         )
 
 
@@ -60,20 +79,32 @@ def save_info(symbol: str, info: dict):
 # ── Load ─────────────────────────────────────────────────────────────────────
 
 def load_history(symbol: str, interval_label: str,
-                 period_label: str) -> tuple[pd.DataFrame | None, str | None]:
+                 period_label: str = None) -> tuple:
     with _conn() as conn:
-        row = conn.execute(
-            "SELECT data, updated_at FROM history_cache "
-            "WHERE symbol=? AND interval_label=? AND period_label=?",
-            (symbol, interval_label, period_label),
-        ).fetchone()
-    if row is None:
+        rows = conn.execute(
+            "SELECT date, open, high, low, close, volume FROM history_ohlcv "
+            "WHERE symbol=? AND interval_label=? ORDER BY date",
+            (symbol, interval_label),
+        ).fetchall()
+    if not rows:
         return None, None
-    df = pd.read_json(io.StringIO(row[0]))
-    df.index = pd.to_datetime(df.index)
-    if hasattr(df.index, "tz") and df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
-    return df, row[1]
+
+    dates, opens, highs, lows, closes, volumes = zip(*rows)
+    df = pd.DataFrame({
+        "Open": opens, "High": highs, "Low": lows,
+        "Close": closes, "Volume": volumes,
+    }, index=pd.to_datetime(dates))
+    df.index.name = "Date"
+
+    if period_label and period_label in PERIOD_DAYS:
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=PERIOD_DAYS[period_label])
+        df = df[df.index >= cutoff]
+
+    if df.empty:
+        return None, None
+
+    updated_at = dates[-1][:16].replace("T", " ")
+    return df, updated_at
 
 
 def load_info(symbol: str) -> dict | None:
@@ -89,22 +120,43 @@ def load_info(symbol: str) -> dict | None:
 def list_cached() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute("""
-            SELECT h.symbol, i.data, MAX(h.updated_at) as last_update
-            FROM history_cache h
+            SELECT h.symbol, i.data, MAX(h.date) as last_date
+            FROM history_ohlcv h
             LEFT JOIN info_cache i ON h.symbol = i.symbol
             GROUP BY h.symbol
-            ORDER BY last_update DESC
+            ORDER BY last_date DESC
         """).fetchall()
     result = []
-    for symbol, info_json, updated_at in rows:
+    for symbol, info_json, last_date in rows:
         info = json.loads(info_json) if info_json else {}
         name = info.get("longName", info.get("shortName", "")) or ""
         result.append({
             "symbol":     symbol,
             "name":       name[:14] or symbol,
-            "updated_at": updated_at[:16].replace("T", " ") if updated_at else "",
+            "updated_at": last_date[:16].replace("T", " ") if last_date else "",
         })
     return result
+
+
+# ── Row count per symbol/interval (for data status) ──────────────────────────
+
+def row_counts(symbol: str) -> dict:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT interval_label, COUNT(*) FROM history_ohlcv "
+            "WHERE symbol=? GROUP BY interval_label",
+            (symbol,),
+        ).fetchall()
+    return dict(rows)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _f(v) -> float:
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _now() -> str:
