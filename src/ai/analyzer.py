@@ -65,14 +65,19 @@ def _analyze_gemini(data: dict) -> str:
     api_key = get("gemini_api_key")
     if not api_key:
         return "請在設定中填入 Gemini API Key。"
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    response = model.generate_content(_build_prompt(data))
-    text = response.text or ""
-    if not text.strip():
-        return "Gemini 未回傳內容，請稍後再試。"
-    return text
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=_build_prompt(data),
+        )
+        text = response.text or ""
+        if not text.strip():
+            return "Gemini 未回傳內容，請稍後再試。"
+        return text
+    except Exception as e:
+        return f"Gemini 連線失敗：{e}"
 
 
 def _analyze_ollama(data: dict) -> str:
