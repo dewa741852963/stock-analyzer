@@ -308,14 +308,15 @@ class StockAnalyzerApp(tk.Tk):
         # AI tab
         ai_frame = tk.Frame(nb, bg=CARD)
         nb.add(ai_frame, text="  AI 分析  ")
+        # 先 pack 按鈕讓它固定在底部，再讓文字區填滿剩餘空間
+        self._ai_btn = ttk.Button(ai_frame, text="🤖  執行 AI 分析",
+                                  style="AI.TButton", command=self._run_ai)
+        self._ai_btn.pack(side="bottom", pady=6)
         self.ai_text = scrolledtext.ScrolledText(
             ai_frame, bg=CARD, fg="#ffffff", wrap="word",
             font=("SF Pro Display", 12), borderwidth=0,
             insertbackground="#ffffff", padx=12, pady=8)
         self.ai_text.pack(fill="both", expand=True)
-        self._ai_btn = ttk.Button(ai_frame, text="🤖  執行 AI 分析",
-                                  style="AI.TButton", command=self._run_ai)
-        self._ai_btn.pack(pady=6)
 
     # ── Empty state ───────────────────────────────────────────────────────────
 
@@ -372,9 +373,7 @@ class StockAnalyzerApp(tk.Tk):
         self._draw_kline(data)
         self._draw_indicator_chart(data)
         self._update_fundamentals(data)
-        self.ai_text.configure(state="normal")
         self.ai_text.delete("1.0", "end")
-        self.ai_text.configure(state="disabled")
         self._set_loading(False)
         if data.get("from_cache"):
             cached_at = data.get("cached_at", "")[:16].replace("T", " ")
