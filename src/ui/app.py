@@ -311,8 +311,9 @@ class StockAnalyzerApp(tk.Tk):
         self.ai_text = scrolledtext.ScrolledText(
             ai_frame, bg=CARD, fg=TEXT, wrap="word",
             font=("SF Pro Display", 12), borderwidth=0,
-            insertbackground=TEXT, disabledforeground=TEXT,
-            state="disabled", padx=12, pady=8)
+            insertbackground=TEXT, state="disabled", padx=12, pady=8)
+        self.ai_text.tag_configure("body", foreground=TEXT,
+                                   font=("SF Pro Display", 12))
         self.ai_text.pack(fill="both", expand=True)
         self._ai_btn = ttk.Button(ai_frame, text="🤖  執行 AI 分析",
                                   style="AI.TButton", command=self._run_ai)
@@ -695,7 +696,7 @@ class StockAnalyzerApp(tk.Tk):
     def _show_ai(self, text: str):
         self.ai_text.configure(state="normal")
         self.ai_text.delete("1.0", "end")
-        self.ai_text.insert("end", text or "（AI 未回傳任何內容）")
+        self.ai_text.insert("end", text or "（AI 未回傳任何內容）", "body")
         self.ai_text.configure(state="disabled")
         self._ai_btn.configure(state="normal", text="🤖  執行 AI 分析")
 
