@@ -16,28 +16,44 @@ def build_symbol(symbol: str, market: str) -> str:
     return symbol
 
 def fetch_stock_data(symbol: str, market: str, period_label: str) -> dict:
+    from src.data.database import save_history, save_info, load_history, load_info
+
     ticker_sym = build_symbol(symbol, market)
     period = PERIODS.get(period_label, "6mo")
 
-    ticker = yf.Ticker(ticker_sym)
-    hist = ticker.history(period=period)
-
-    if hist.empty:
-        raise ValueError(f"找不到股票資料：{ticker_sym}")
-
-    # Remove timezone for compatibility
-    if hasattr(hist.index, "tz") and hist.index.tz is not None:
-        hist.index = hist.index.tz_localize(None)
-
-    _add_indicators(hist)
-
-    info = {}
     try:
-        info = ticker.info or {}
-    except Exception:
-        pass
+        ticker = yf.Ticker(ticker_sym)
+        hist = ticker.history(period=period)
 
-    return {"symbol": ticker_sym, "history": hist, "info": info}
+        if hist.empty:
+            raise ValueError(f"找不到股票資料：{ticker_sym}")
+
+        if hasattr(hist.index, "tz") and hist.index.tz is not None:
+            hist.index = hist.index.tz_localize(None)
+
+        _add_indicators(hist)
+
+        info = {}
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = load_info(ticker_sym) or {}
+
+        # 儲存至本地資料庫
+        save_history(ticker_sym, "日線", period_label, hist)
+        save_info(ticker_sym, info)
+
+        return {"symbol": ticker_sym, "history": hist, "info": info,
+                "from_cache": False}
+
+    except Exception as net_err:
+        # 網路失敗 → 嘗試讀取快取
+        hist, cached_at = load_history(ticker_sym, "日線", period_label)
+        if hist is not None:
+            info = load_info(ticker_sym) or {}
+            return {"symbol": ticker_sym, "history": hist, "info": info,
+                    "from_cache": True, "cached_at": cached_at}
+        raise net_err
 
 
 def _add_indicators(hist: pd.DataFrame):
@@ -79,23 +95,40 @@ INTERVAL_MAP = {
 
 def fetch_interval_data(symbol: str, interval_label: str, period_label: str = "6個月") -> dict:
     """依時間週期取得 OHLCV，用於切換 分時/日線/週線/月線。"""
+    from src.data.database import save_history, load_history
+
     period_override, interval = INTERVAL_MAP[interval_label]
     period = period_override or PERIODS.get(period_label, "6mo")
 
-    ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period, interval=interval)
+    # 分時圖不快取（資料只對當天有效）
+    use_cache = interval_label != "分時"
 
-    if hist.empty:
-        raise ValueError(f"無資料：{symbol} ({interval_label})")
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period, interval=interval)
 
-    if hasattr(hist.index, "tz") and hist.index.tz is not None:
-        hist.index = hist.index.tz_localize(None)
+        if hist.empty:
+            raise ValueError(f"無資料：{symbol} ({interval_label})")
 
-    # 日線以外不計算技術指標（資料點不足或無意義）
-    if interval_label == "日線":
-        _add_indicators(hist)
+        if hasattr(hist.index, "tz") and hist.index.tz is not None:
+            hist.index = hist.index.tz_localize(None)
 
-    return {"symbol": symbol, "history": hist, "info": {}}
+        if interval_label == "日線":
+            _add_indicators(hist)
+
+        if use_cache:
+            save_history(symbol, interval_label, period_label, hist)
+
+        return {"symbol": symbol, "history": hist, "info": {},
+                "from_cache": False}
+
+    except Exception as net_err:
+        if use_cache:
+            hist, cached_at = load_history(symbol, interval_label, period_label)
+            if hist is not None:
+                return {"symbol": symbol, "history": hist, "info": {},
+                        "from_cache": True, "cached_at": cached_at}
+        raise net_err
 
 
 def fetch_live_price(symbol: str) -> dict:

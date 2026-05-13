@@ -11,6 +11,7 @@ import pandas as pd
 
 from src.data.fetcher import (fetch_stock_data, find_col, fetch_live_price,
                                is_trading_hours, fetch_interval_data)
+from src.data.database import list_cached
 from src.config import get_api_key, get as cfg_get
 from src.ui.settings_dialog import SettingsDialog
 
@@ -221,6 +222,14 @@ class StockAnalyzerApp(tk.Tk):
         for label, key in indicator_rows:
             self.ind_lbl[key] = self._sb_row(sb, label, mono=True)
 
+        self._sb_divider(sb)
+
+        # ── 最近查詢 ──
+        self._sb_section_title(sb, "最近查詢")
+        self._history_frame = tk.Frame(sb, bg=PANEL)
+        self._history_frame.pack(fill="x", padx=8)
+        self._refresh_history_list()
+
     def _sb_section_title(self, parent, text):
         tk.Label(parent, text=text.upper(), bg=PANEL, fg=DIM,
                  font=("SF Pro Display", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 4))
@@ -237,6 +246,38 @@ class StockAnalyzerApp(tk.Tk):
         val = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=font, anchor="w")
         val.pack(side="left")
         return val
+
+    def _refresh_history_list(self):
+        for w in self._history_frame.winfo_children():
+            w.destroy()
+        cached = list_cached()
+        if not cached:
+            tk.Label(self._history_frame, text="尚無快取資料", bg=PANEL,
+                     fg=DIM, font=("SF Pro Display", 10)).pack(anchor="w", padx=6)
+            return
+        for item in cached[:8]:
+            symbol = item["symbol"]
+            card = tk.Frame(self._history_frame, bg=SURFACE, cursor="hand2")
+            card.pack(fill="x", pady=2)
+            tk.Label(card, text=symbol, bg=SURFACE, fg=ACCENT,
+                     font=("SF Pro Display", 11, "bold"), anchor="w").pack(
+                     side="left", padx=8, pady=4)
+            tk.Label(card, text=item["updated_at"][5:16], bg=SURFACE, fg=DIM,
+                     font=("SF Pro Display", 9), anchor="e").pack(
+                     side="right", padx=6)
+            for widget in (card,) + tuple(card.winfo_children()):
+                widget.bind("<Button-1>", lambda e, s=symbol: self._load_from_history(s))
+                widget.bind("<Enter>", lambda e, c=card: c.configure(bg=BORDER))
+                widget.bind("<Leave>", lambda e, c=card: c.configure(bg=SURFACE))
+
+    def _load_from_history(self, symbol: str):
+        # 解析市場
+        market = "台股" if symbol.endswith(".TW") or symbol.endswith(".TWO") else "美股"
+        clean  = symbol.replace(".TW", "").replace(".TWO", "")
+        self.symbol_var.set(clean)
+        self._sym_entry.configure(foreground=TEXT)
+        self.market_var.set(market)
+        self._start_analysis()
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
 
@@ -335,7 +376,12 @@ class StockAnalyzerApp(tk.Tk):
         self.ai_text.delete("1.0", "end")
         self.ai_text.configure(state="disabled")
         self._set_loading(False)
-        self._status("分析完成 ✓", GREEN)
+        if data.get("from_cache"):
+            cached_at = data.get("cached_at", "")[:16].replace("T", " ")
+            self._status(f"💾 離線模式  快取於 {cached_at}", YELLOW)
+        else:
+            self._status("分析完成 ✓", GREEN)
+        self._refresh_history_list()
         self._start_live_refresh()
 
     # ── Sidebar update ────────────────────────────────────────────────────────
