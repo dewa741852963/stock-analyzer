@@ -526,36 +526,103 @@ class StockAnalyzerApp(tk.Tk):
 
     def _draw_kline(self, data):
         hist = data["history"]
+        info = data.get("info", {})
         for w in self.chart_frame.winfo_children():
             w.destroy()
 
         df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
 
+        # ── Overlay lines ─────────────────────────────────────────────────────
         add = []
-        for col, color, lw in [("SMA_20", "#89b4fa", 1.3), ("SMA_50", "#f9e2af", 1.3)]:
-            c = find_col(hist, col)
-            if c:
-                add.append(mpf.make_addplot(hist[c].values, color=color, width=lw, panel=0))
-        for col in ["BBU_", "BBL_"]:
-            c = find_col(hist, col)
-            if c:
-                add.append(mpf.make_addplot(hist[c].values, color=BORDER,
-                                             width=0.7, linestyle="--", panel=0))
+        ma20 = find_col(hist, "SMA_20")
+        ma50 = find_col(hist, "SMA_50")
+        bbu  = find_col(hist, "BBU_")
+        bbl  = find_col(hist, "BBL_")
+        if ma20: add.append(mpf.make_addplot(hist[ma20].values, color="#89b4fa", width=1.8, panel=0))
+        if ma50: add.append(mpf.make_addplot(hist[ma50].values, color="#f9e2af", width=1.8, panel=0))
+        if bbu:  add.append(mpf.make_addplot(hist[bbu].values,  color="#585b70", width=0.9,
+                                              linestyle="--", panel=0))
+        if bbl:  add.append(mpf.make_addplot(hist[bbl].values,  color="#585b70", width=0.9,
+                                              linestyle="--", panel=0))
 
-        mc = mpf.make_marketcolors(up=GREEN, down=RED, edge="inherit",
-                                    wick="inherit", volume="inherit")
+        # ── Style ─────────────────────────────────────────────────────────────
+        mc = mpf.make_marketcolors(
+            up=GREEN, down=RED,
+            edge={"up": GREEN, "down": RED},
+            wick={"up": GREEN, "down": RED},
+            volume={"up": GREEN, "down": RED},
+        )
         style = mpf.make_mpf_style(
             base_mpf_style="nightclouds", marketcolors=mc,
-            facecolor=PANEL, edgecolor=BORDER,
-            gridcolor="#313244", gridstyle="--")
-        kwargs = dict(type="candle", volume=True, style=style, returnfig=True,
-                      figsize=(13, 5), title=f"\n{data['symbol']}",
-                      warn_too_much_data=9999)
+            facecolor=CARD, edgecolor="#3d3d52",
+            gridcolor="#2a2a3e", gridstyle=":",
+            y_on_right=True,
+            rc={
+                "font.size": 9,
+                "axes.labelcolor": DIM,
+                "xtick.color": DIM,
+                "ytick.color": DIM,
+                "xtick.labelsize": 9,
+                "ytick.labelsize": 9,
+            },
+        )
+
+        kwargs = dict(
+            type="candle", volume=True, style=style, returnfig=True,
+            figsize=(14, 5.8), warn_too_much_data=9999,
+            volume_panel=1, panel_ratios=(4, 1),
+            tight_layout=True,
+        )
         if add:
             kwargs["addplot"] = add
 
         fig, axes = mpf.plot(df, **kwargs)
-        fig.patch.set_facecolor(PANEL)
+        fig.set_dpi(120)
+        fig.patch.set_facecolor(CARD)
+
+        # ── Post-process axes ─────────────────────────────────────────────────
+        ax_main = axes[0]
+
+        # Title: symbol + last price + change %
+        last  = hist["Close"].iloc[-1]
+        prev  = hist["Close"].iloc[-2] if len(hist) > 1 else last
+        pct   = (last - prev) / prev * 100
+        sign  = "+" if pct >= 0 else ""
+        clr   = GREEN if pct >= 0 else RED
+        name  = info.get("longName", info.get("shortName", "")) or ""
+        lbl   = f"{name}  " if name else ""
+        ax_main.set_title(
+            f"  {lbl}{data['symbol']}     {last:,.2f}   {sign}{pct:.2f}%",
+            loc="left", color=TEXT, fontsize=10.5, fontweight="bold", pad=8,
+        )
+
+        # Bollinger band area fill
+        if bbu and bbl:
+            x = range(len(df))
+            ax_main.fill_between(x, hist[bbu].values, hist[bbl].values,
+                                 alpha=0.06, color=ACCENT, zorder=0)
+
+        # MA legend (top-right)
+        legend_items = []
+        if ma20:
+            legend_items.append(ax_main.plot([], [], color="#89b4fa", lw=1.8, label="MA20")[0])
+        if ma50:
+            legend_items.append(ax_main.plot([], [], color="#f9e2af", lw=1.8, label="MA50")[0])
+        if bbu:
+            legend_items.append(ax_main.plot([], [], color="#585b70", lw=0.9, ls="--", label="BB")[0])
+        if legend_items:
+            ax_main.legend(handles=legend_items, loc="upper left",
+                           fontsize=8.5, framealpha=0.15,
+                           labelcolor=TEXT, facecolor=CARD,
+                           edgecolor=BORDER, handlelength=1.5)
+
+        # Uniform spine + tick style across all panels
+        for ax in axes:
+            ax.set_facecolor(CARD)
+            for spine in ax.spines.values():
+                spine.set_color("#3d3d52")
+            ax.tick_params(colors=DIM, labelsize=8.5, length=3, width=0.6)
+
         self._embed_chart(fig, self.chart_frame, axes=axes, df=df)
 
     # ── Indicator chart ───────────────────────────────────────────────────────
