@@ -5,11 +5,10 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
 import matplotlib
-# Support Chinese characters in chart titles/labels on macOS
-matplotlib.rcParams["font.family"] = [
-    "PingFang SC", "Heiti SC", "STHeiti", "Arial Unicode MS", "DejaVu Sans"
-]
 matplotlib.rcParams["axes.unicode_minus"] = False
+
+# CJK font family list (confirmed available on this macOS system)
+_CJK_FONTS = ["Heiti TC", "STHeiti", "Arial Unicode MS", "DejaVu Sans"]
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -484,51 +483,85 @@ class StockAnalyzerApp(tk.Tk):
         for w in self.chart_frame.winfo_children():
             w.destroy()
 
-        fig = Figure(figsize=(13, 5), facecolor=PANEL)
-        ax = fig.add_subplot(1, 1, 1)
-        ax.set_facecolor(CARD)
-
         if hist.empty:
-            ax.text(0.5, 0.5, "今日無分時資料（非交易日）",
+            fig = Figure(figsize=(13, 5), facecolor=PANEL)
+            ax = fig.add_subplot(1, 1, 1)
+            ax.set_facecolor(CARD)
+            ax.text(0.5, 0.5, "今日無分時資料（非交易日或盤前）",
                     ha="center", va="center", color=DIM, fontsize=12,
                     transform=ax.transAxes)
-        else:
-            close = hist["Close"]
-            # Use actual previous day's close if available, else first bar
-            prev_close = data.get("info", {}).get("previousClose") or hist["Close"].iloc[0]
-            x = range(len(close))
+            for spine in ax.spines.values():
+                spine.set_color(BORDER)
+            fig.patch.set_facecolor(PANEL)
+            self._embed_chart(fig, self.chart_frame)
+            return
 
-            color_line = GREEN if close.iloc[-1] >= prev_close else RED
-            ax.plot(x, close.values, color=color_line, linewidth=1.5)
-            ax.fill_between(x, close.values, prev_close,
-                            where=(close.values >= prev_close),
-                            alpha=0.12, color=GREEN)
-            ax.fill_between(x, close.values, prev_close,
-                            where=(close.values < prev_close),
-                            alpha=0.12, color=RED)
-            ax.axhline(prev_close, color=DIM, linewidth=0.8, linestyle="--", alpha=0.6)
+        df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+        prev_close = data.get("info", {}).get("previousClose") or hist["Close"].iloc[0]
 
-            # X 軸顯示時間
-            n = len(hist)
-            step = max(n // 6, 1)
-            ticks = list(range(0, n, step))
-            labels = [hist.index[i].strftime("%H:%M") for i in ticks]
-            ax.set_xticks(ticks)
-            ax.set_xticklabels(labels, fontsize=8)
+        mc = mpf.make_marketcolors(
+            up=GREEN, down=RED,
+            edge={"up": GREEN, "down": RED},
+            wick={"up": GREEN, "down": RED},
+            volume={"up": GREEN, "down": RED},
+        )
+        style = mpf.make_mpf_style(
+            base_mpf_style="nightclouds", marketcolors=mc,
+            facecolor=CARD, edgecolor="#3d3d52",
+            gridcolor="#2a2a3e", gridstyle=":",
+            y_on_right=True,
+            rc={
+                "font.size": 9,
+                "font.family": _CJK_FONTS,
+                "axes.labelcolor": DIM,
+                "xtick.color": DIM,
+                "ytick.color": DIM,
+                "xtick.labelsize": 8,
+                "ytick.labelsize": 9,
+            },
+        )
 
-            current = close.iloc[-1]
-            chg_pct = (current - prev_close) / prev_close * 100
-            sign = "+" if chg_pct >= 0 else ""
-            ax.set_title(f"{symbol}  分時走勢    {current:.2f}  {sign}{chg_pct:.2f}%",
-                         color=color_line, fontsize=11, pad=8)
+        kwargs = dict(
+            type="candle", volume=True, style=style, returnfig=True,
+            figsize=(14, 5.8), warn_too_much_data=9999,
+            volume_panel=1, panel_ratios=(4, 1),
+            tight_layout=True,
+            datetime_format="%H:%M",
+            xrotation=0,
+        )
 
-        for spine in ax.spines.values():
-            spine.set_color(BORDER)
-        ax.tick_params(colors=DIM, labelsize=8)
-        fig.tight_layout(pad=0.8)
-        fig.patch.set_facecolor(PANEL)
+        fig, axes = mpf.plot(df, **kwargs)
+        fig.set_dpi(120)
+        fig.patch.set_facecolor(CARD)
 
-        self._embed_chart(fig, self.chart_frame, df=hist)
+        ax_main = axes[0]
+
+        # Previous close reference line
+        ax_main.axhline(prev_close, color=DIM, linewidth=0.9,
+                        linestyle="--", alpha=0.7, zorder=0)
+        ax_main.annotate(
+            f"前收 {prev_close:,.0f}",
+            xy=(0.002, prev_close), xycoords=("axes fraction", "data"),
+            color=DIM, fontsize=7.5, va="bottom", ha="left",
+            fontfamily=_CJK_FONTS,
+        )
+
+        last = hist["Close"].iloc[-1]
+        chg_pct = (last - prev_close) / prev_close * 100
+        sign = "+" if chg_pct >= 0 else ""
+        ax_main.set_title(
+            f"  {symbol}  分時走勢     {last:,.2f}   {sign}{chg_pct:.2f}%",
+            loc="left", color=TEXT, fontsize=10.5, fontweight="bold", pad=8,
+            fontfamily=_CJK_FONTS,
+        )
+
+        for ax in axes:
+            ax.set_facecolor(CARD)
+            for spine in ax.spines.values():
+                spine.set_color("#3d3d52")
+            ax.tick_params(colors=DIM, labelsize=8.5, length=3, width=0.6)
+
+        self._embed_chart(fig, self.chart_frame, axes=axes, df=df)
 
     # ── K-line chart ──────────────────────────────────────────────────────────
 
@@ -567,6 +600,7 @@ class StockAnalyzerApp(tk.Tk):
             y_on_right=True,
             rc={
                 "font.size": 9,
+                "font.family": _CJK_FONTS,
                 "axes.labelcolor": DIM,
                 "xtick.color": DIM,
                 "ytick.color": DIM,
@@ -602,6 +636,7 @@ class StockAnalyzerApp(tk.Tk):
         ax_main.set_title(
             f"  {lbl}{data['symbol']}     {last:,.2f}   {sign}{pct:.2f}%",
             loc="left", color=TEXT, fontsize=10.5, fontweight="bold", pad=8,
+            fontfamily=_CJK_FONTS,
         )
 
         # Bollinger band area fill
