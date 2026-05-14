@@ -120,7 +120,14 @@ def fetch_interval_data(symbol: str, interval_label: str, period_label: str = "6
         if use_cache:
             save_history(symbol, interval_label, hist)
 
-        return {"symbol": symbol, "history": hist, "info": {},
+        extra_info = {}
+        if interval_label == "分時":
+            fi = ticker.fast_info
+            pc = getattr(fi, "previous_close", None)
+            if pc is not None:
+                extra_info["previousClose"] = float(pc)
+
+        return {"symbol": symbol, "history": hist, "info": extra_info,
                 "from_cache": False}
 
     except Exception as net_err:

@@ -4,6 +4,13 @@ import os
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
+import matplotlib
+# Support Chinese characters in chart titles/labels on macOS
+matplotlib.rcParams["font.family"] = [
+    "PingFang SC", "Heiti SC", "STHeiti", "Arial Unicode MS", "DejaVu Sans"
+]
+matplotlib.rcParams["axes.unicode_minus"] = False
+
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import mplfinance as mpf
@@ -487,7 +494,8 @@ class StockAnalyzerApp(tk.Tk):
                     transform=ax.transAxes)
         else:
             close = hist["Close"]
-            prev_close = hist["Close"].iloc[0]
+            # Use actual previous day's close if available, else first bar
+            prev_close = data.get("info", {}).get("previousClose") or hist["Close"].iloc[0]
             x = range(len(close))
 
             color_line = GREEN if close.iloc[-1] >= prev_close else RED
@@ -658,18 +666,24 @@ class StockAnalyzerApp(tk.Tk):
         hist_col = find_col(hist, "MACDh_")
         if macd_col and sig_col:
             macd = hist[macd_col].dropna()
-            sig  = hist[sig_col].reindex(macd.index)
-            x    = range(len(macd))
-            ax2.plot(x, macd.values, color=ACCENT, linewidth=1.2, label="MACD")
-            ax2.plot(x, sig.values,  color=YELLOW,  linewidth=1.2, label="Signal")
-            if hist_col:
-                hv = hist[hist_col].reindex(macd.index).values
-                ax2.bar(x, hv, color=[GREEN if v >= 0 else RED for v in hv],
-                        alpha=0.5, width=0.8)
-            ax2.axhline(0, color=DIM, linewidth=0.5, alpha=0.5)
-            ax2.set_ylabel("MACD", color=DIM, fontsize=9)
-            ax2.legend(loc="upper left", fontsize=8, framealpha=0.2,
-                       labelcolor=TEXT, facecolor=CARD)
+            if macd.empty:
+                ax2.text(0.5, 0.5, "資料不足，MACD 需至少 26 根 K 線",
+                         ha="center", va="center", color=DIM, fontsize=9,
+                         transform=ax2.transAxes)
+                ax2.set_ylabel("MACD", color=DIM, fontsize=9)
+            else:
+                sig  = hist[sig_col].reindex(macd.index)
+                x    = range(len(macd))
+                ax2.plot(x, macd.values, color=ACCENT, linewidth=1.2, label="MACD")
+                ax2.plot(x, sig.values,  color=YELLOW,  linewidth=1.2, label="Signal")
+                if hist_col:
+                    hv = hist[hist_col].reindex(macd.index).values
+                    ax2.bar(x, hv, color=[GREEN if v >= 0 else RED for v in hv],
+                            alpha=0.5, width=0.8)
+                ax2.axhline(0, color=DIM, linewidth=0.5, alpha=0.5)
+                ax2.set_ylabel("MACD", color=DIM, fontsize=9)
+                ax2.legend(loc="upper left", fontsize=8, framealpha=0.2,
+                           labelcolor=TEXT, facecolor=CARD)
 
         for ax in (ax1, ax2):
             ax.set_facecolor(CARD)
